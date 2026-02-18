@@ -20,31 +20,35 @@ TIMEOUT = 30
 # --- Account lists ---
 
 # Official AI company accounts (news/announcements)
+# NOTE: OpenAI, AnthropicAI, GoogleDeepMind, GoogleAI are excluded here
+# because they already have dedicated channels (#openai-updates, etc.).
 AI_NEWS_ACCOUNTS = [
-    "OpenAI",
-    "AnthropicAI",
-    "GoogleDeepMind",
-    "GoogleAI",
     "xai",
     "MistralAI",
     "MetaAI",
     "nvidia",
     "huggingface",
+    "MSFTResearch",
+    "IBMResearch",
+    "StabilityAI",
+    "CohereAI",
+    "Aboratory",
 ]
 
 # Accounts that share AI tips, tutorials, developer content
+# NOTE: ChatGPTapp, ClaudeAI removed (official product accounts, not tips).
+# llaboratory, kaborooo, skiaborooo removed (noisy / may not exist).
 AI_TIPS_ACCOUNTS = [
     "OpenAIDevs",
     "LangChainAI",
-    "llaboratory",
     "LlamaIndex",
     "weights_biases",
     "AndrewYNg",
-    "kaborooo",
-    "skiaborooo",
-    "ChatGPTapp",
-    "ClaudeAI",
     "GoogleColab",
+    "svpino",
+    "hwchase17",
+    "jerryjliu0",
+    "emaboratory",
 ]
 
 
@@ -175,6 +179,12 @@ class XTipsSource(_XBaseSource):
 
     name = "ai_tips"
 
+    # Keyword filter to keep only educational / useful content.
+    _KEYWORD_FILTER = (
+        "(tip OR tutorial OR \"how to\" OR prompt OR workflow"
+        " OR guide OR thread OR learn)"
+    )
+
     def _build_query(self) -> str:
         from_clauses = " OR ".join(f"from:{a}" for a in AI_TIPS_ACCOUNTS)
-        return f"({from_clauses}) -is:retweet -is:reply"
+        return f"({from_clauses}) {self._KEYWORD_FILTER} -is:retweet -is:reply"

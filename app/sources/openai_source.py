@@ -9,29 +9,12 @@ import requests
 from bs4 import BeautifulSoup
 
 from .base import Article, BaseSource
+from .http_client import create_session, fetch_with_retry, RSS_HEADERS as _RSS_HEADERS, DEFAULT_TIMEOUT
 from .playwright_base import PlaywrightMixin, fetch_with_playwright
 
 logger = logging.getLogger(__name__)
 
-# More realistic browser headers to avoid bot detection
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Cache-Control": "max-age=0",
-    "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Windows"',
-}
-
-TIMEOUT = 15  # seconds
+TIMEOUT = DEFAULT_TIMEOUT
 REQUEST_DELAY = 2  # seconds between requests
 CONTENT_MAX_LENGTH = 3000  # Maximum characters for article content
 
@@ -67,8 +50,7 @@ class OpenAISource(BaseSource, PlaywrightMixin):
             Configured requests Session object.
         """
         if self._session is None:
-            self._session = requests.Session()
-            self._session.headers.update(HEADERS)
+            self._session = create_session()
         return self._session
 
     def fetch_articles(self, limit: int = 10) -> list[Article]:
@@ -152,13 +134,7 @@ class OpenAISource(BaseSource, PlaywrightMixin):
         Returns:
             List of Article objects.
         """
-        # Use requests with minimal headers to fetch RSS XML, then parse
-        rss_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/rss+xml, application/xml, text/xml, */*",
-        }
-        resp = requests.get(rss_url, headers=rss_headers, timeout=TIMEOUT, allow_redirects=True)
-        resp.raise_for_status()
+        resp = fetch_with_retry(rss_url, headers=_RSS_HEADERS, timeout=TIMEOUT)
 
         feed = feedparser.parse(resp.text)
 
@@ -197,6 +173,14 @@ class OpenAISource(BaseSource, PlaywrightMixin):
                         published_at = datetime(*entry.updated_parsed[:6])
                     except (TypeError, ValueError):
                         pass
+
+                # Skip articles older than 14 days
+                if published_at:
+                    from datetime import timezone, timedelta
+                    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+                    pub_aware = published_at if published_at.tzinfo else published_at.replace(tzinfo=timezone.utc)
+                    if pub_aware < cutoff:
+                        continue
 
                 articles.append(
                     Article(

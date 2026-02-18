@@ -10,34 +10,12 @@ import requests
 from bs4 import BeautifulSoup
 
 from .base import Article, BaseSource
+from .http_client import create_session, fetch_with_retry, RSS_HEADERS, DEFAULT_TIMEOUT
 from .playwright_base import PlaywrightMixin, fetch_with_playwright
 
 logger = logging.getLogger(__name__)
 
-# Browser-like headers to avoid being blocked
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    "Accept-Language": "en-US,en;q=0.9,ja;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Cache-Control": "max-age=0",
-    "Sec-Ch-Ua": '"Not A(Brand";v="99", "Google Chrome";v="121", "Chromium";v="121"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-}
-
-RSS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Accept": "application/rss+xml, application/xml, text/xml, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-TIMEOUT = 15  # seconds
+TIMEOUT = DEFAULT_TIMEOUT
 
 
 class AnthropicSource(BaseSource, PlaywrightMixin):
@@ -47,14 +25,11 @@ class AnthropicSource(BaseSource, PlaywrightMixin):
 
     NEWS_URL = "https://www.anthropic.com/news"
 
-    # Potential RSS feed URLs
+    # Anthropic does not currently provide an RSS feed.
+    # Keep only the most likely candidates to minimize timeout overhead.
     RSS_URLS = [
         "https://www.anthropic.com/feed.xml",
         "https://www.anthropic.com/rss.xml",
-        "https://www.anthropic.com/news/feed",
-        "https://www.anthropic.com/news/rss",
-        "https://www.anthropic.com/blog/feed",
-        "https://www.anthropic.com/index.xml",
     ]
 
     def __init__(self):
@@ -64,8 +39,7 @@ class AnthropicSource(BaseSource, PlaywrightMixin):
     def _get_session(self) -> requests.Session:
         """Get or create a requests session."""
         if self._session is None:
-            self._session = requests.Session()
-            self._session.headers.update(HEADERS)
+            self._session = create_session()
         return self._session
 
     def fetch_articles(self, limit: int = 10) -> list[Article]:
@@ -119,11 +93,12 @@ class AnthropicSource(BaseSource, PlaywrightMixin):
 
         for rss_url in self.RSS_URLS:
             try:
-                response = session.get(
+                response = fetch_with_retry(
                     rss_url,
+                    session=session,
                     headers=RSS_HEADERS,
                     timeout=TIMEOUT,
-                    allow_redirects=True
+                    max_retries=1,  # Don't waste time retrying RSS that likely 404s
                 )
 
                 if response.status_code == 200:
@@ -189,6 +164,14 @@ class AnthropicSource(BaseSource, PlaywrightMixin):
             )
 
             published_at = self._get_rss_date(item, namespaces)
+
+            # Skip articles older than 14 days
+            if published_at:
+                from datetime import timezone, timedelta
+                cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+                pub_aware = published_at if published_at.tzinfo else published_at.replace(tzinfo=timezone.utc)
+                if pub_aware < cutoff:
+                    continue
 
             articles.append(
                 Article(
@@ -297,8 +280,7 @@ class AnthropicSource(BaseSource, PlaywrightMixin):
             List of Article objects.
         """
         session = self._get_session()
-        response = session.get(self.NEWS_URL, timeout=TIMEOUT)
-        response.raise_for_status()
+        response = fetch_with_retry(self.NEWS_URL, session=session, timeout=TIMEOUT)
 
         soup = BeautifulSoup(response.text, "html.parser")
         articles: list[Article] = []
@@ -388,6 +370,9 @@ class AnthropicSource(BaseSource, PlaywrightMixin):
     def _fetch_with_playwright(self, limit: int) -> list[Article]:
         """Fetch articles using Playwright for bot protection bypass.
 
+        Uses listing page only - does NOT fetch individual article content
+        to avoid 2+ minute delays from per-article Playwright loads.
+
         Args:
             limit: Maximum number of articles to fetch.
 
@@ -395,14 +380,13 @@ class AnthropicSource(BaseSource, PlaywrightMixin):
             List of Article objects.
         """
         try:
-            # Use Playwright to get the page content
             html_content = fetch_with_playwright(
                 self.NEWS_URL,
                 wait_selector='a[href*="/news/"]',
-                timeout=30000
+                timeout=30000,
+                extra_wait=2000,
             )
 
-            # Parse with BeautifulSoup (reuse existing logic)
             soup = BeautifulSoup(html_content, "html.parser")
             articles: list[Article] = []
 
@@ -419,16 +403,6 @@ class AnthropicSource(BaseSource, PlaywrightMixin):
 
                 article = self._parse_article_element(elem, seen_urls)
                 if article:
-                    # Fetch full article content from the article page
-                    full_content = self._fetch_article_content(article.url)
-                    if full_content:
-                        article = Article(
-                            url=article.url,
-                            title=article.title,
-                            content=full_content,
-                            source=article.source,
-                            published_at=article.published_at,
-                        )
                     articles.append(article)
                     seen_urls.add(article.url)
 

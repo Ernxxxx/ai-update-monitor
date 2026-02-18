@@ -243,6 +243,92 @@ def get_article(db_path: str, url: str) -> dict | None:
         return dict(row)
 
 
+def batch_check_articles(
+    db_path: str,
+    urls: list[str],
+    titles_dates: list[tuple[str | None, str | None]] | None = None,
+) -> dict[str, dict]:
+    """Batch check article status for multiple URLs in a single query.
+
+    Returns a mapping of URL -> row dict for all existing articles.
+    Also checks title+date combinations if provided.
+
+    Args:
+        db_path: Path to the SQLite database file.
+        urls: List of article URLs to check.
+        titles_dates: Optional list of (title, published_at) tuples.
+
+    Returns:
+        Dict mapping URL to article row dict. Also includes entries keyed
+        by "title::date" for title+date matches.
+    """
+    if not urls:
+        return {}
+
+    result: dict[str, dict] = {}
+
+    with get_connection(db_path) as conn:
+        # Batch query by URL
+        placeholders = ",".join("?" * len(urls))
+        cursor = conn.execute(
+            f"SELECT url, title, published_at, content_hash, notified_at "
+            f"FROM articles WHERE url IN ({placeholders})",
+            urls,
+        )
+        for row in cursor.fetchall():
+            row_dict = dict(row)
+            result[row_dict["url"]] = row_dict
+
+        # Batch query by title+date
+        if titles_dates:
+            pairs = [
+                (t, d) for t, d in titles_dates
+                if t is not None and d is not None
+            ]
+            if pairs:
+                or_clauses = " OR ".join(
+                    "(title = ? AND published_at = ?)" for _ in pairs
+                )
+                params = []
+                for t, d in pairs:
+                    params.extend([t, d])
+                cursor = conn.execute(
+                    f"SELECT url, title, published_at, content_hash, notified_at "
+                    f"FROM articles WHERE {or_clauses}",
+                    params,
+                )
+                for row in cursor.fetchall():
+                    row_dict = dict(row)
+                    key = f"{row_dict['title']}::{row_dict['published_at']}"
+                    if key not in result:
+                        result[key] = row_dict
+
+    return result
+
+
+def purge_old_articles(db_path: str, days: int = 30) -> int:
+    """Delete articles older than the specified number of days.
+
+    Args:
+        db_path: Path to the SQLite database file.
+        days: Maximum age of articles to keep.
+
+    Returns:
+        Number of articles deleted.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    with get_connection(db_path) as conn:
+        cursor = conn.execute(
+            "DELETE FROM articles WHERE created_at < ?",
+            (cutoff,),
+        )
+        conn.commit()
+        return cursor.rowcount
+
+
 def get_article_by_title_date(
     db_path: str, title: str, published_at: str
 ) -> dict | None:

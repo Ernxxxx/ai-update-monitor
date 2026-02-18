@@ -1,5 +1,6 @@
 """Playwright-based source for sites with bot protection."""
 
+import atexit
 import logging
 from typing import Optional, Literal
 from contextlib import contextmanager
@@ -39,12 +40,15 @@ class PlaywrightMixin:
     @classmethod
     def close_browser(cls) -> None:
         """Close the shared browser instance."""
-        if cls._browser:
-            cls._browser.close()
-            cls._browser = None
-        if cls._playwright:
-            cls._playwright.stop()
-            cls._playwright = None
+        try:
+            if cls._browser:
+                cls._browser.close()
+                cls._browser = None
+            if cls._playwright:
+                cls._playwright.stop()
+                cls._playwright = None
+        except Exception as e:
+            logger.debug(f"Error closing browser: {e}")
 
     @contextmanager
     def get_page(
@@ -128,3 +132,7 @@ def fetch_with_playwright(
     except Exception as e:
         logger.error(f"Playwright fetch failed for {url}: {e}")
         raise
+
+
+# Register cleanup at program exit to prevent browser process leaks
+atexit.register(PlaywrightMixin.close_browser)

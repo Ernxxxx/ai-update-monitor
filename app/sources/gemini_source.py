@@ -3,23 +3,17 @@
 import hashlib
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import requests
 from bs4 import BeautifulSoup
 
 from .base import Article, BaseSource
+from .http_client import fetch_with_retry, DEFAULT_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
-# Common headers to avoid being blocked
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-}
-
-TIMEOUT = 10  # seconds
+TIMEOUT = DEFAULT_TIMEOUT
 
 
 class GeminiSource(BaseSource):
@@ -81,8 +75,7 @@ class GeminiSource(BaseSource):
         Returns:
             List of Article objects representing changelog entries.
         """
-        response = requests.get(self.CHANGELOG_URL, headers=HEADERS, timeout=TIMEOUT)
-        response.raise_for_status()
+        response = fetch_with_retry(self.CHANGELOG_URL, timeout=TIMEOUT)
 
         soup = BeautifulSoup(response.text, "html.parser")
         articles: list[Article] = []
@@ -100,6 +93,12 @@ class GeminiSource(BaseSource):
             parsed_date = self._parse_changelog_date(text)
 
             if not parsed_date:
+                continue
+
+            # Skip entries older than 30 days
+            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+            entry_date = parsed_date if parsed_date.tzinfo else parsed_date.replace(tzinfo=timezone.utc)
+            if entry_date < cutoff:
                 continue
 
             # Collect all ul > li content following this h2 until next h2
@@ -211,8 +210,7 @@ class GeminiSource(BaseSource):
         Returns:
             List of Article objects.
         """
-        response = requests.get(self.AI_BLOG_URL, headers=HEADERS, timeout=TIMEOUT)
-        response.raise_for_status()
+        response = fetch_with_retry(self.AI_BLOG_URL, timeout=TIMEOUT)
 
         soup = BeautifulSoup(response.text, "html.parser")
         articles: list[Article] = []
@@ -412,29 +410,21 @@ class GeminiSource(BaseSource):
     ) -> str:
         """Generate a unique anchor for changelog entries.
 
-        Creates an anchor that combines the slugified title with a short hash
-        of the content to ensure uniqueness even for entries with similar titles.
+        Creates an anchor that combines the slugified title with the date.
+        Using only date (no content hash) ensures the same changelog date
+        always produces the same URL, preventing duplicate posts when
+        content changes slightly.
 
         Args:
             title: The entry title.
-            content: The entry content.
+            content: The entry content (unused, kept for API compatibility).
             published_at: The publication date (if available).
 
         Returns:
             A unique anchor string suitable for URL fragments.
         """
-        # Start with slugified title
         slug = self._slugify(title)
-
-        # Add date component if available
-        date_part = ""
         if published_at:
             date_part = published_at.strftime("%Y%m%d")
-
-        # Create a short hash from content for uniqueness
-        content_hash = hashlib.md5(content.encode("utf-8")).hexdigest()[:8]
-
-        # Combine components
-        if date_part:
-            return f"{slug}-{date_part}-{content_hash}"
-        return f"{slug}-{content_hash}"
+            return f"{slug}-{date_part}"
+        return slug
