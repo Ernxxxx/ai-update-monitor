@@ -88,86 +88,53 @@ class GeminiSource(BaseSource):
         articles: list[Article] = []
         seen_keys: set[str] = set()  # Track unique articles
 
-        # TODO: These selectors may change as Google updates their docs site.
-        # The changelog page typically has dated sections with updates.
-        # Inspect https://ai.google.dev/gemini-api/docs/changelog and update.
+        # Page structure: <h2>Date</h2> followed by <ul><li>...</li></ul>
+        # Each h2 is a date heading, the next sibling ul contains the updates
+        h2_elements = soup.select("h2")
 
-        # Look for changelog entries - typically h2/h3 with dates followed by content
-        # Google's devsite often uses specific classes
-        changelog_sections = soup.select(
-            "article section, .devsite-article-body > section, "
-            ".devsite-article-body > h2, .devsite-article-body > h3"
-        )
-
-        if not changelog_sections:
-            # Fallback: look for any headings that look like dates
-            changelog_sections = soup.select("h2, h3")
-
-        current_date: datetime | None = None
-        current_title: str = ""
-        current_content: list[str] = []
-
-        for section in changelog_sections:
+        for h2 in h2_elements:
             if len(articles) >= limit:
                 break
 
-            # Check if this is a date heading
-            text = section.get_text(strip=True)
+            text = h2.get_text(strip=True)
             parsed_date = self._parse_changelog_date(text)
 
-            if parsed_date:
-                # Save previous entry if exists
-                if current_title and current_content:
-                    content = "\n".join(current_content)
-                    # Generate unique anchor using title, content, and date
-                    unique_anchor = self._generate_unique_anchor(
-                        current_title, content, current_date
-                    )
-                    url = f"{self.CHANGELOG_URL}#{unique_anchor}"
+            if not parsed_date:
+                continue
 
-                    # Check for duplicates
-                    unique_key = self._generate_unique_key(url, current_title)
-                    if unique_key not in seen_keys:
-                        seen_keys.add(unique_key)
-                        articles.append(
-                            Article(
-                                url=url,
-                                title=current_title,
-                                content=content,
-                                source=self.name,
-                                published_at=current_date,
-                            )
-                        )
+            # Collect all ul > li content following this h2 until next h2
+            content_parts: list[str] = []
+            sibling = h2.find_next_sibling()
+            while sibling and sibling.name != "h2":
+                if sibling.name == "ul":
+                    for li in sibling.find_all("li", recursive=False):
+                        li_text = li.get_text(strip=True)
+                        if li_text:
+                            content_parts.append(f"- {li_text}")
+                sibling = sibling.find_next_sibling()
 
-                current_date = parsed_date
-                current_title = text
-                current_content = []
-            elif current_title:
-                # This is content under the current date
-                current_content.append(text)
+            if not content_parts:
+                continue
 
-        # Don't forget the last entry
-        if current_title and current_content and len(articles) < limit:
-            content = "\n".join(current_content)
-            unique_anchor = self._generate_unique_anchor(
-                current_title, content, current_date
-            )
+            content = "\n".join(content_parts)
+            display_title = self._build_changelog_title(text, content)
+            unique_anchor = self._generate_unique_anchor(text, content, parsed_date)
             url = f"{self.CHANGELOG_URL}#{unique_anchor}"
 
-            unique_key = self._generate_unique_key(url, current_title)
+            unique_key = self._generate_unique_key(url, text)
             if unique_key not in seen_keys:
                 seen_keys.add(unique_key)
                 articles.append(
                     Article(
                         url=url,
-                        title=current_title,
+                        title=display_title,
                         content=content,
                         source=self.name,
-                        published_at=current_date,
+                        published_at=parsed_date,
                     )
                 )
 
-        # Alternative approach: look for list items or specific changelog format
+        # Alternative approach if h2 method found nothing
         if not articles:
             articles = self._fetch_changelog_alternative(soup, limit)
 
@@ -298,7 +265,7 @@ class GeminiSource(BaseSource):
             title_elem = card.select_one("h1, h2, h3, h4, .title, .headline")
             title = title_elem.get_text(strip=True) if title_elem else link.get_text(strip=True)
 
-            if not title:
+            if not title or len(title) < 5:
                 continue
 
             # Extract date
@@ -319,6 +286,35 @@ class GeminiSource(BaseSource):
             )
 
         return articles
+
+    @staticmethod
+    def _build_changelog_title(date_title: str, content: str) -> str:
+        """Build a descriptive title for changelog entries.
+
+        Changelog entries often have just a date as the heading.
+        This prepends 'Gemini API Changelog:' and appends a short
+        content hint to make the title more informative.
+
+        Args:
+            date_title: The raw date heading text.
+            content: The changelog entry content.
+
+        Returns:
+            A descriptive title string.
+        """
+        # Extract first meaningful line as a hint (up to 60 chars)
+        hint = ""
+        for line in content.split("\n"):
+            line = line.strip()
+            if line and len(line) > 10:
+                hint = line[:60].rstrip()
+                if len(line) > 60:
+                    hint += "..."
+                break
+
+        if hint:
+            return f"Gemini API Changelog: {date_title} - {hint}"
+        return f"Gemini API Changelog: {date_title}"
 
     def _parse_changelog_date(self, text: str) -> datetime | None:
         """Parse date from changelog heading text.

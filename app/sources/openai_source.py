@@ -42,11 +42,10 @@ class OpenAISource(BaseSource, PlaywrightMixin):
     name = "openai"
 
     # RSS feeds (preferred - less likely to be blocked)
+    # /news/rss.xml is the canonical URL; /blog/rss.xml redirects to it
     RSS_FEEDS = [
+        "https://openai.com/news/rss.xml",
         "https://openai.com/blog/rss.xml",
-        "https://openai.com/blog/rss",
-        "https://openai.com/rss.xml",
-        "https://openai.com/feed",
     ]
 
     # Web pages to scrape (fallback)
@@ -143,6 +142,9 @@ class OpenAISource(BaseSource, PlaywrightMixin):
     def _fetch_from_rss(self, rss_url: str, limit: int) -> list[Article]:
         """Fetch articles from an RSS feed.
 
+        Uses requests with full browser headers to avoid 403, then parses
+        the XML with feedparser.
+
         Args:
             rss_url: URL of the RSS feed.
             limit: Maximum number of articles to fetch.
@@ -150,11 +152,17 @@ class OpenAISource(BaseSource, PlaywrightMixin):
         Returns:
             List of Article objects.
         """
-        # feedparser handles its own requests, but we can pass headers
-        feed = feedparser.parse(rss_url, request_headers=HEADERS)
+        # Use requests with minimal headers to fetch RSS XML, then parse
+        rss_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        }
+        resp = requests.get(rss_url, headers=rss_headers, timeout=TIMEOUT, allow_redirects=True)
+        resp.raise_for_status()
+
+        feed = feedparser.parse(resp.text)
 
         if feed.bozo and not feed.entries:
-            # Feed parsing failed completely
             raise ValueError(f"Failed to parse RSS feed: {feed.bozo_exception}")
 
         articles: list[Article] = []
@@ -434,36 +442,89 @@ class OpenAISource(BaseSource, PlaywrightMixin):
     def _extract_title(self, element) -> str:
         """Extract title from a link element.
 
+        Tries heading elements first to avoid picking up category/date text
+        that may be siblings within the same link container.
+
         Args:
             element: BeautifulSoup element.
 
         Returns:
             Title string or empty string if not found.
         """
-        # Try direct text
-        title = element.get_text(strip=True)
-        if title and len(title) > 5:  # Avoid very short titles like "Read"
-            return title
-
-        # Try nested heading elements
-        for tag in ["h1", "h2", "h3", "h4", ".title", ".heading"]:
+        # Strategy 1: Try nested heading elements first (most reliable)
+        for tag in ["h1", "h2", "h3", "h4"]:
             title_elem = element.select_one(tag)
             if title_elem:
                 title = title_elem.get_text(strip=True)
-                if title:
+                if title and len(title) > 5:
                     return title
 
-        # Try parent element
+        # Strategy 2: Try title/heading classes
+        for selector in [".title", ".heading", "[class*='title']", "[class*='heading']"]:
+            title_elem = element.select_one(selector)
+            if title_elem:
+                title = title_elem.get_text(strip=True)
+                if title and len(title) > 5:
+                    return title
+
+        # Strategy 3: Try parent element for headings
         parent = element.parent
         if parent:
             for tag in ["h1", "h2", "h3", "h4", ".title", ".heading"]:
                 title_elem = parent.select_one(tag)
                 if title_elem:
                     title = title_elem.get_text(strip=True)
-                    if title:
+                    if title and len(title) > 5:
                         return title
 
+        # Strategy 4: Try aria-label or title attribute
+        for attr in ["aria-label", "title"]:
+            attr_val = element.get(attr)
+            if attr_val and len(attr_val) > 5:
+                return attr_val.strip()
+
+        # Strategy 5: Fall back to direct text (last resort)
+        # Only use if no other strategy worked -- may include category/date
+        title = element.get_text(strip=True)
+        if title and len(title) > 5:
+            return self._clean_title(title)
+
         return ""
+
+    @staticmethod
+    def _clean_title(title: str) -> str:
+        """Remove trailing category and date suffixes from titles.
+
+        OpenAI's news page often embeds category and date in link text,
+        e.g. "Some Title - Research - Feb 13, 2026" or "TitleResearchFeb 13, 2026".
+
+        Args:
+            title: Raw title string.
+
+        Returns:
+            Cleaned title string.
+        """
+        import re
+
+        # Pattern: " - Category - Month Day, Year" at end
+        title = re.sub(
+            r"\s*-\s*(?:Research|Safety|Engineering|Global Affairs|News|Product|"
+            r"Announcements|API|Company|Education)\s*-\s*"
+            r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\s*$",
+            "",
+            title,
+        )
+
+        # Pattern: "CategoryMonth Day, Year" directly concatenated (no separators)
+        title = re.sub(
+            r"(?:Research|Safety|Engineering|Global Affairs|News|Product|"
+            r"Announcements|API|Company|Education)"
+            r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+\d{4}\s*$",
+            "",
+            title,
+        )
+
+        return title.strip()
 
     def _extract_date(self, element) -> datetime | None:
         """Try to extract publication date from an element.

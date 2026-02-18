@@ -8,6 +8,7 @@ from .base import Article, BaseSource
 from .gemini_source import GeminiSource
 from .openai_source import OpenAISource
 from .playwright_base import PlaywrightMixin, fetch_with_playwright
+from .x_source import XNewsSource, XTipsSource
 
 __all__ = [
     "Article",
@@ -15,6 +16,8 @@ __all__ = [
     "OpenAISource",
     "AnthropicSource",
     "GeminiSource",
+    "XNewsSource",
+    "XTipsSource",
     "PlaywrightMixin",
     "fetch_with_playwright",
     "get_all_sources",
@@ -26,9 +29,17 @@ def get_all_sources() -> list[BaseSource]:
 
     Returns:
         List of BaseSource instances for all supported AI news sources.
+        X sources are included only if X_BEARER_TOKEN is configured.
     """
-    return [
+    sources: list[BaseSource] = [
         OpenAISource(),
         AnthropicSource(),
         GeminiSource(),
     ]
+
+    x_news = XNewsSource()
+    if x_news.bearer_token:
+        sources.append(x_news)
+        sources.append(XTipsSource())
+
+    return sources

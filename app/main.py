@@ -15,7 +15,7 @@ from app.config import get_config, Config
 from app.db import init_db, is_notified, is_updated, save_article
 from app.sources import get_all_sources, Article
 from app.llm import summarize_article
-from app.discord import send_notification, format_notification
+from app.discord import DiscordBot
 from app.utils import compute_hash, format_datetime
 
 
@@ -151,6 +151,11 @@ def process_articles(
         logger.info("No new or updated articles to process")
         return 0
 
+    # Initialize Discord Bot and ensure channels exist
+    bot = DiscordBot(token=config.discord_bot_token, guild_id=config.discord_guild_id)
+    if not dry_run:
+        bot.ensure_channels()
+
     processed_count = 0
 
     for article in all_to_process:
@@ -186,34 +191,23 @@ def process_articles(
             logger.warning(f"Skipping article without summary (use --fallback to send anyway): {article.title}")
             continue
 
-        # Prepare article dict for formatting
-        article_dict = {
-            "source": article.source,
-            "title": article.title,
-            "url": article.url,
-        }
-
-        # Format notification content
-        notification_content = format_notification(article_dict, summary)
-
-        if dry_run:
-            logger.info(f"[DRY-RUN] Would send notification:")
-            logger.info(f"---\n{notification_content}\n---")
-        else:
-            try:
-                success = send_notification(
-                    webhook_url=config.discord_webhook_url,
-                    content=notification_content,
-                    dry_run=False,
-                )
-                if success:
-                    logger.info(f"Sent notification for: {article.title}")
-                else:
-                    logger.error(f"Failed to send notification for: {article.title}")
-                    continue
-            except Exception as e:
-                logger.error(f"Failed to send Discord notification: {e}")
+        # Send via Discord Bot embed
+        try:
+            success = bot.send_embed(
+                source=article.source,
+                title=article.title,
+                summary=summary,
+                url=article.url,
+                dry_run=dry_run,
+            )
+            if success:
+                logger.info(f"Sent embed for: {article.title} -> #{article.source}")
+            else:
+                logger.error(f"Failed to send embed for: {article.title}")
                 continue
+        except Exception as e:
+            logger.error(f"Failed to send Discord embed: {e}")
+            continue
 
         # Save to database
         content_hash = compute_hash(article.content)

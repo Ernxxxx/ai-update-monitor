@@ -1,155 +1,196 @@
-"""Discord Webhook notification module.
+"""Discord Bot API notification module.
 
-Sends notifications to Discord via webhook.
+Uses Discord REST API (no gateway/WebSocket needed).
+Automatically creates channels and sends rich embeds per source.
 """
 
 import logging
 import time
+from typing import Optional
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-DISCORD_MAX_LENGTH = 2000
-MAX_ARTICLES_PER_POST = 3
+DISCORD_API_BASE = "https://discord.com/api/v10"
 MAX_RETRIES = 3
-RETRY_DELAYS = [1, 2, 4]  # Exponential backoff: 1s, 2s, 4s
+RETRY_DELAYS = [1, 2, 4]
 
-SOURCE_DISPLAY_NAMES = {
-    "openai": "OPENAI",
-    "anthropic": "ANTHROPIC",
-    "gemini": "GEMINI",
+# Source -> channel name mapping
+SOURCE_CHANNELS: dict[str, str] = {
+    "openai": "openai-updates",
+    "anthropic": "anthropic-updates",
+    "gemini": "gemini-updates",
+    "ai_news": "ai-news",
+    "ai_tips": "ai-tips",
 }
 
+# Source display config for embeds
+SOURCE_CONFIG: dict[str, dict] = {
+    "openai": {"name": "OpenAI", "color": 0x10A37F},       # green
+    "anthropic": {"name": "Anthropic", "color": 0xD4A574},  # tan/brown
+    "gemini": {"name": "Gemini", "color": 0x4285F4},        # blue
+    "ai_news": {"name": "AI News", "color": 0xFF6B35},      # orange
+    "ai_tips": {"name": "AI Tips", "color": 0x9B59B6},      # purple
+}
 
-def send_notification(webhook_url: str, content: str, dry_run: bool = False) -> bool:
-    """Send a notification to Discord via webhook.
+CATEGORY_NAME = "AI Updates"
 
-    Args:
-        webhook_url: Discord webhook URL.
-        content: Message content to send.
-        dry_run: If True, only log the message without sending.
 
-    Returns:
-        True if successful, False otherwise.
-    """
-    # Truncate content if exceeds Discord's limit
-    if len(content) > DISCORD_MAX_LENGTH:
-        truncated_content = content[: DISCORD_MAX_LENGTH - 3] + "..."
-        logger.warning(
-            f"Content truncated from {len(content)} to {DISCORD_MAX_LENGTH} characters"
-        )
-        content = truncated_content
+class DiscordBot:
+    """Discord Bot client using REST API only (no gateway)."""
 
-    if dry_run:
-        logger.info(f"[DRY RUN] Would send notification:\n{content}")
-        return True
+    def __init__(self, token: str, guild_id: str):
+        self.token = token
+        self.guild_id = guild_id
+        self.headers = {
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+        }
+        self._channel_cache: dict[str, str] = {}  # source -> channel_id
 
-    payload = {"content": content}
+    def _request(self, method: str, endpoint: str, **kwargs) -> Optional[dict]:
+        """Make a Discord API request with retry and rate limit handling."""
+        url = f"{DISCORD_API_BASE}{endpoint}"
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = requests.request(
+                    method, url, headers=self.headers, timeout=15, **kwargs
+                )
 
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = requests.post(
-                webhook_url,
-                json=payload,
-                timeout=10,
+                # Handle rate limiting
+                if resp.status_code == 429:
+                    retry_after = resp.json().get("retry_after", 2)
+                    logger.warning(f"Rate limited, waiting {retry_after}s...")
+                    time.sleep(retry_after)
+                    continue
+
+                resp.raise_for_status()
+                return resp.json() if resp.content else None
+
+            except requests.RequestException as e:
+                logger.warning(f"API request attempt {attempt + 1}/{MAX_RETRIES} failed: {e}")
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(RETRY_DELAYS[attempt])
+                else:
+                    raise
+
+        return None
+
+    def ensure_channels(self) -> None:
+        """Create the category and per-source channels if they don't exist."""
+        channels = self._request("GET", f"/guilds/{self.guild_id}/channels")
+        if not channels:
+            logger.error("Failed to fetch guild channels")
+            return
+
+        # Index existing channels by name
+        existing_text: dict[str, str] = {}   # name -> id
+        existing_cats: dict[str, str] = {}   # name -> id
+        for ch in channels:
+            if ch["type"] == 0:  # GUILD_TEXT
+                existing_text[ch["name"]] = ch["id"]
+            elif ch["type"] == 4:  # GUILD_CATEGORY
+                existing_cats[ch["name"].lower()] = ch["id"]
+
+        # Find or create category
+        category_id = existing_cats.get(CATEGORY_NAME.lower())
+        if category_id is None:
+            logger.info(f"Creating category: {CATEGORY_NAME}")
+            cat = self._request(
+                "POST",
+                f"/guilds/{self.guild_id}/channels",
+                json={"name": CATEGORY_NAME, "type": 4},
             )
-            response.raise_for_status()
-            logger.info("Notification sent successfully")
+            if cat:
+                category_id = cat["id"]
+            else:
+                logger.error("Failed to create category")
+                return
+
+        # Create missing channels under the category
+        for source, channel_name in SOURCE_CHANNELS.items():
+            if channel_name in existing_text:
+                self._channel_cache[source] = existing_text[channel_name]
+                logger.info(f"Channel exists: #{channel_name} -> {source}")
+            else:
+                logger.info(f"Creating channel: #{channel_name}")
+                ch = self._request(
+                    "POST",
+                    f"/guilds/{self.guild_id}/channels",
+                    json={
+                        "name": channel_name,
+                        "type": 0,
+                        "parent_id": category_id,
+                    },
+                )
+                if ch:
+                    self._channel_cache[source] = ch["id"]
+                    logger.info(f"Created channel: #{channel_name} -> {source}")
+                else:
+                    logger.error(f"Failed to create channel: #{channel_name}")
+
+    def get_channel_id(self, source: str) -> Optional[str]:
+        """Get channel ID for a source, initializing channels if needed."""
+        if not self._channel_cache:
+            self.ensure_channels()
+        return self._channel_cache.get(source)
+
+    def send_embed(
+        self,
+        source: str,
+        title: str,
+        summary: Optional[str],
+        url: str,
+        dry_run: bool = False,
+    ) -> bool:
+        """Send a rich embed notification to the source-specific channel.
+
+        Args:
+            source: Article source name (e.g. "openai").
+            title: Article title.
+            summary: LLM-generated summary text.
+            url: Article URL.
+            dry_run: If True, log instead of sending.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        channel_name = SOURCE_CHANNELS.get(source, source)
+        channel_id = self.get_channel_id(source)
+
+        if not channel_id:
+            logger.error(f"No channel for source: {source}")
+            return False
+
+        config = SOURCE_CONFIG.get(source, {"name": source.upper(), "color": 0x808080})
+
+        # Build embed
+        description = summary if summary else "要約なし"
+        # Discord embed description limit is 4096 chars
+        if len(description) > 4000:
+            description = description[:3997] + "..."
+
+        embed = {
+            "title": title[:256],  # Discord title limit
+            "description": description,
+            "url": url,
+            "color": config["color"],
+            "footer": {"text": f"{config['name']} | 公式発表"},
+        }
+
+        if dry_run:
+            logger.info(f"[DRY-RUN] #{channel_name}: {title}")
             return True
-        except requests.RequestException as e:
-            logger.warning(f"Attempt {attempt + 1}/{MAX_RETRIES} failed: {e}")
-            if attempt < MAX_RETRIES - 1:
-                delay = RETRY_DELAYS[attempt]
-                logger.info(f"Retrying in {delay} seconds...")
-                time.sleep(delay)
 
-    logger.error("Failed to send notification after all retries")
-    return False
-
-
-def format_notification(article: dict, summary: str | None) -> str:
-    """Format a notification message for an article.
-
-    Args:
-        article: Article dict containing 'source', 'title', 'url' keys.
-        summary: Summary text or None if no summary available.
-
-    Returns:
-        Formatted notification string.
-    """
-    source = article.get("source", "unknown").lower()
-    source_display = SOURCE_DISPLAY_NAMES.get(source, source.upper())
-    title = article.get("title", "No title")
-    url = article.get("url", "")
-
-    summary_text = summary if summary else "要約なし"
-
-    return f"""**[{source_display}] 新規/更新: {title}**
-
-{summary_text}
-
-確度: 公式発表
-ソース: {url}"""
-
-
-def send_batch_notifications(
-    webhook_url: str,
-    articles: list[dict],
-    summaries: list[str | None],
-    dry_run: bool = False,
-) -> int:
-    """Send batch notifications for multiple articles.
-
-    Articles are grouped into posts with maximum 3 articles per post.
-
-    Args:
-        webhook_url: Discord webhook URL.
-        articles: List of article dicts.
-        summaries: List of summaries corresponding to each article.
-        dry_run: If True, only log without sending.
-
-    Returns:
-        Number of articles successfully notified.
-    """
-    if len(articles) != len(summaries):
-        logger.error("Articles and summaries count mismatch")
-        return 0
-
-    if not articles:
-        logger.info("No articles to notify")
-        return 0
-
-    success_count = 0
-
-    # Process in batches of MAX_ARTICLES_PER_POST
-    for i in range(0, len(articles), MAX_ARTICLES_PER_POST):
-        batch_articles = articles[i : i + MAX_ARTICLES_PER_POST]
-        batch_summaries = summaries[i : i + MAX_ARTICLES_PER_POST]
-
-        # Format each article in the batch
-        formatted_messages = []
-        for article, summary in zip(batch_articles, batch_summaries):
-            formatted_messages.append(format_notification(article, summary))
-
-        # Join with separator
-        combined_content = "\n\n---\n\n".join(formatted_messages)
-
-        if send_notification(webhook_url, combined_content, dry_run):
-            success_count += len(batch_articles)
-            logger.info(
-                f"Batch {i // MAX_ARTICLES_PER_POST + 1}: "
-                f"Sent {len(batch_articles)} articles"
+        try:
+            self._request(
+                "POST",
+                f"/channels/{channel_id}/messages",
+                json={"embeds": [embed]},
             )
-        else:
-            logger.error(
-                f"Batch {i // MAX_ARTICLES_PER_POST + 1}: "
-                f"Failed to send {len(batch_articles)} articles"
-            )
-
-        # Add small delay between batches to avoid rate limiting
-        if i + MAX_ARTICLES_PER_POST < len(articles):
-            time.sleep(0.5)
-
-    logger.info(f"Total notifications sent: {success_count}/{len(articles)}")
-    return success_count
+            logger.info(f"Sent to #{channel_name}: {title}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send to #{channel_name}: {e}")
+            return False
