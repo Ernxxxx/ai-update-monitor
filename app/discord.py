@@ -166,18 +166,19 @@ class DiscordBot:
         config = SOURCE_CONFIG.get(source, {"name": source.upper(), "color": 0x808080})
 
         # Build embed
-        description = summary if summary else "要約なし"
-        # Discord embed description limit is 4096 chars
-        if len(description) > 4000:
-            description = description[:3997] + "..."
-
         embed = {
             "title": title[:256],  # Discord title limit
-            "description": description,
             "url": url,
             "color": config["color"],
             "footer": {"text": f"{config['name']} | {config.get('footer', config['name'])}"},
         }
+
+        # Add description only if summary has content
+        if summary:
+            description = summary
+            if len(description) > 4000:
+                description = description[:3997] + "..."
+            embed["description"] = description
 
         if dry_run:
             logger.info(f"[DRY-RUN] #{channel_name}: {title}")

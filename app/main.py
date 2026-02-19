@@ -227,8 +227,10 @@ def process_articles(
 
         summary: Optional[str] = None
 
-        # X sources (ai_tips, ai_news): skip LLM, use tweet text + URL directly
-        if article.source in ("ai_tips", "ai_news"):
+        # X sources: skip LLM. Tips = URL only, News = tweet text.
+        if article.source == "ai_tips":
+            summary = ""
+        elif article.source == "ai_news":
             summary = article.content
         elif config.llm_api_key:
             try:
