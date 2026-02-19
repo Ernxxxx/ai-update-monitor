@@ -184,7 +184,7 @@ class XTipsSource(_XBaseSource):
     _KEYWORD_FILTER = (
         "(tip OR tutorial OR \"how to\" OR prompt OR workflow"
         " OR guide OR thread OR learn"
-        " OR AI OR LLM OR Claude OR GPT OR Gemini OR ChatGPT"
+        " OR AI OR LLM OR Claude OR GPT OR Gemini OR ChatGPT OR Codex OR OpenClaw OR Grok OR Copilot"
         " OR \u30d7\u30ed\u30f3\u30d7\u30c8 OR \u6d3b\u7528 OR \u4f7f\u3044\u65b9 OR \u30c6\u30af\u30cb\u30c3\u30af"
         " OR \u81ea\u52d5\u5316 OR \u751f\u6210AI OR \u30a8\u30fc\u30b8\u30a7\u30f3\u30c8 OR \u30c4\u30fc\u30eb"
         " OR \u8a66\u3057 OR \u3084\u3070 OR \u3059\u3054 OR \u4fbf\u5229 OR \u795e)"
