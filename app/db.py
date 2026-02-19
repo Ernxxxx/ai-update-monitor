@@ -357,6 +357,32 @@ def get_article_by_title_date(
         return dict(row)
 
 
+def get_notified_titles(db_path: str, titles: list[str]) -> set[str]:
+    """Check which titles have already been notified (regardless of date).
+
+    Useful for X/Twitter sources where the same promo tweet is posted
+    multiple times with different tweet IDs.
+
+    Args:
+        db_path: Path to the SQLite database file.
+        titles: List of article titles to check.
+
+    Returns:
+        Set of titles that have been notified.
+    """
+    if not titles:
+        return set()
+
+    with get_connection(db_path) as conn:
+        placeholders = ",".join("?" * len(titles))
+        cursor = conn.execute(
+            f"SELECT DISTINCT title FROM articles "
+            f"WHERE title IN ({placeholders}) AND notified_at IS NOT NULL",
+            titles,
+        )
+        return {row["title"] for row in cursor.fetchall()}
+
+
 def get_recent_articles(
     db_path: str,
     days: int = 7,

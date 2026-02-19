@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from app.config import get_config, Config
-from app.db import init_db, is_notified, save_article, batch_check_articles, purge_old_articles
+from app.db import init_db, is_notified, save_article, batch_check_articles, purge_old_articles, get_notified_titles
 from app.sources import get_all_sources, Article
 from app.llm import summarize_article, generate_weekly_digest
 from app.db import get_recent_articles
@@ -190,9 +190,17 @@ def process_articles(
     ]
     existing = batch_check_articles(config.db_path, urls, titles_dates)
 
+    # For X sources: also check title-only matches to catch repeated promo tweets
+    # (same text content posted as different tweet IDs)
+    x_sources = {"ai_news", "ai_tips"}
+    x_titles = [a.title for a in articles if a.source in x_sources and a.title]
+    notified_titles = get_notified_titles(config.db_path, x_titles) if x_titles else set()
+
     new_articles: List[Article] = []
     skipped_url = 0
     skipped_title_date = 0
+    skipped_title = 0
+    seen_titles: set[str] = set()  # In-batch dedup for same-text tweets
 
     for article in articles:
         pub_str = format_datetime(article.published_at) if article.published_at else None
@@ -210,10 +218,20 @@ def process_articles(
         elif title_date_row and title_date_row.get("notified_at"):
             # Already notified by title+date (different URL, same article)
             skipped_title_date += 1
+        elif article.source in x_sources and article.title and (
+            article.title in notified_titles or article.title in seen_titles
+        ):
+            # X source: same tweet text already notified or in current batch
+            skipped_title += 1
         else:
+            if article.source in x_sources and article.title:
+                seen_titles.add(article.title)
             new_articles.append(article)
 
     logger.info(
+        f"Found {len(new_articles)} new articles "
+        f"(skipped: {skipped_url} by URL, {skipped_title_date} by title+date"
+        f", {skipped_title} by title)" if skipped_title else
         f"Found {len(new_articles)} new articles "
         f"(skipped: {skipped_url} by URL, {skipped_title_date} by title+date)"
     )
