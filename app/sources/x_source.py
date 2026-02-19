@@ -32,23 +32,21 @@ AI_NEWS_ACCOUNTS = [
     "IBMResearch",
     "StabilityAI",
     "CohereAI",
-    "Aboratory",
 ]
 
 # Accounts that share AI tips, tutorials, developer content
-# NOTE: ChatGPTapp, ClaudeAI removed (official product accounts, not tips).
-# llaboratory, kaborooo, skiaborooo removed (noisy / may not exist).
+# NOTE: OpenAIDevs, GoogleColab removed -- their content overlaps with
+# #openai-updates and #gemini-updates, causing cross-channel duplicates.
+# ChatGPTapp, ClaudeAI removed (official product accounts, not tips).
 AI_TIPS_ACCOUNTS = [
-    "OpenAIDevs",
     "LangChainAI",
     "LlamaIndex",
     "weights_biases",
     "AndrewYNg",
-    "GoogleColab",
     "svpino",
     "hwchase17",
     "jerryjliu0",
-    "emaboratory",
+    "kaboratory",
 ]
 
 

@@ -66,16 +66,12 @@ class TestProcessArticles:
     def test_skips_already_notified(self, mock_fetch, mock_bot_cls, db_path):
         """Articles already in DB with notified_at should be skipped."""
         from app.db import save_article as db_save
-        from app.utils import compute_hash
 
-        article = _make_article(0)
-        # Pre-populate DB with matching content_hash so it's not treated as "updated"
         db_save(db_path, {
             "url": "https://example.com/article-0",
             "source": "openai",
             "title": "Test Article 0",
             "notified_at": "2026-01-01T00:00:00+00:00",
-            "content_hash": compute_hash(article.content),
         })
 
         mock_fetch.return_value = [_make_article(0)]
@@ -84,6 +80,31 @@ class TestProcessArticles:
 
         config = _make_config(db_path)
         processed = process_articles(config, dry_run=True, fallback=True)
+        assert processed == 0
+
+    @patch("app.main.DiscordBot")
+    @patch("app.main.fetch_all_articles")
+    def test_no_repost_on_content_change(self, mock_fetch, mock_bot_cls, db_path):
+        """Content hash change should NOT cause re-posting (was the duplicate bug)."""
+        from app.db import save_article as db_save
+
+        # Save with one hash
+        db_save(db_path, {
+            "url": "https://example.com/article-0",
+            "source": "openai",
+            "title": "Test Article 0",
+            "notified_at": "2026-01-01T00:00:00+00:00",
+            "content_hash": "old_hash_that_differs",
+        })
+
+        # Fetch returns same URL with different content -> hash will differ
+        mock_fetch.return_value = [_make_article(0)]
+        mock_bot = MagicMock()
+        mock_bot_cls.return_value = mock_bot
+
+        config = _make_config(db_path)
+        processed = process_articles(config, dry_run=True, fallback=True)
+        # Must NOT re-post -- this was the duplicate bug
         assert processed == 0
 
     @patch("app.main.DiscordBot")

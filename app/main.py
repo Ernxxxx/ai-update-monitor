@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from app.config import get_config, Config
-from app.db import init_db, is_notified, is_updated, save_article, batch_check_articles, purge_old_articles
+from app.db import init_db, is_notified, save_article, batch_check_articles, purge_old_articles
 from app.sources import get_all_sources, Article
 from app.llm import summarize_article
 from app.discord import DiscordBot
@@ -184,10 +184,10 @@ def process_articles(
     existing = batch_check_articles(config.db_path, urls, titles_dates)
 
     new_articles: List[Article] = []
-    updated_articles: List[Article] = []
+    skipped_url = 0
+    skipped_title_date = 0
 
     for article in articles:
-        content_hash = compute_hash(article.content)
         pub_str = format_datetime(article.published_at) if article.published_at else None
 
         # Check if already notified (by URL or title+date)
@@ -196,20 +196,23 @@ def process_articles(
         title_date_row = existing.get(title_date_key) if title_date_key else None
 
         if row and row.get("notified_at"):
-            # Already notified by URL - check if updated
-            if row.get("content_hash") != content_hash:
-                updated_articles.append(article)
+            # Already notified by URL -- skip entirely.
+            # Content hash changes are cosmetic (dynamic web content) and
+            # should NOT trigger re-posting.
+            skipped_url += 1
         elif title_date_row and title_date_row.get("notified_at"):
-            # Already notified by title+date
-            pass
+            # Already notified by title+date (different URL, same article)
+            skipped_title_date += 1
         else:
             new_articles.append(article)
 
-    all_to_process = new_articles + updated_articles
-    logger.info(f"Found {len(new_articles)} new, {len(updated_articles)} updated articles")
+    logger.info(
+        f"Found {len(new_articles)} new articles "
+        f"(skipped: {skipped_url} by URL, {skipped_title_date} by title+date)"
+    )
 
-    if not all_to_process:
-        logger.info("No new or updated articles to process")
+    if not new_articles:
+        logger.info("No new articles to process")
         return 0
 
     # Initialize Discord Bot and ensure channels exist
@@ -219,10 +222,8 @@ def process_articles(
 
     processed_count = 0
 
-    for article in all_to_process:
-        is_update = article in updated_articles
-        status_label = "updated" if is_update else "new"
-        logger.info(f"Processing ({status_label}): {article.title}")
+    for article in new_articles:
+        logger.info(f"Processing: {article.title}")
 
         summary: Optional[str] = None
 
