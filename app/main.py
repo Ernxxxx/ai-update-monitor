@@ -15,7 +15,8 @@ from typing import List, Optional
 from app.config import get_config, Config
 from app.db import init_db, is_notified, save_article, batch_check_articles, purge_old_articles
 from app.sources import get_all_sources, Article
-from app.llm import summarize_article
+from app.llm import summarize_article, generate_weekly_digest
+from app.db import get_recent_articles
 from app.discord import DiscordBot
 from app.utils import compute_hash, format_datetime
 
@@ -90,6 +91,12 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         "--fallback",
         action="store_true",
         help="Send title+URL only if LLM summarization fails",
+    )
+
+    parser.add_argument(
+        "--weekly-digest",
+        action="store_true",
+        help="Generate and send a weekly digest summary to #weekly-digest",
     )
 
     return parser.parse_args(args)
@@ -312,6 +319,66 @@ def process_articles(
     return processed_count
 
 
+def send_weekly_digest(
+    config: Config,
+    dry_run: bool = False,
+) -> bool:
+    """Generate and send a weekly digest to #weekly-digest.
+
+    Args:
+        config: Application configuration.
+        dry_run: If True, log instead of sending to Discord.
+
+    Returns:
+        True if digest was sent successfully.
+    """
+    logger.info("Generating weekly digest...")
+
+    # Get articles from the past 7 days (official 3 + ai_news)
+    digest_sources = ["openai", "anthropic", "gemini", "ai_news"]
+    articles = get_recent_articles(config.db_path, days=7, sources=digest_sources)
+
+    if not articles:
+        logger.info("No articles found for weekly digest")
+        return False
+
+    logger.info(f"Found {len(articles)} articles for weekly digest")
+
+    if not config.llm_api_key:
+        logger.error("LLM API key required for weekly digest")
+        return False
+
+    digest = generate_weekly_digest(
+        base_url=config.llm_base_url,
+        api_key=config.llm_api_key,
+        model=config.llm_model,
+        articles=articles,
+    )
+
+    if not digest:
+        logger.error("Failed to generate weekly digest")
+        return False
+
+    bot = DiscordBot(token=config.discord_bot_token, guild_id=config.discord_guild_id)
+    if not dry_run:
+        bot.ensure_channels()
+
+    success = bot.send_embed(
+        source="weekly_digest",
+        title="Weekly AI Digest",
+        summary=digest,
+        url="",
+        dry_run=dry_run,
+    )
+
+    if success:
+        logger.info("Weekly digest sent successfully")
+    else:
+        logger.error("Failed to send weekly digest")
+
+    return success
+
+
 def main(args: Optional[List[str]] = None) -> int:
     """Main entry point for the CLI.
 
@@ -336,6 +403,16 @@ def main(args: Optional[List[str]] = None) -> int:
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         return 1
+
+    # Weekly digest mode
+    if parsed_args.weekly_digest:
+        logger.info("Running weekly digest...")
+        try:
+            success = send_weekly_digest(config=config, dry_run=parsed_args.dry_run)
+            return 0 if success else 1
+        except Exception as e:
+            logger.error(f"Error during weekly digest: {e}")
+            return 1
 
     interval = parsed_args.interval or config.check_interval
 

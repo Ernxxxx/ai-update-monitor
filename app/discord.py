@@ -23,6 +23,7 @@ SOURCE_CHANNELS: dict[str, str] = {
     "gemini": "gemini-updates",
     "ai_news": "ai-news",
     "ai_tips": "ai-tips",
+    "weekly_digest": "weekly-digest",
 }
 
 # Source display config for embeds
@@ -32,6 +33,7 @@ SOURCE_CONFIG: dict[str, dict] = {
     "gemini": {"name": "Gemini", "color": 0x4285F4, "footer": "公式発表"},
     "ai_news": {"name": "AI News", "color": 0xFF6B35, "footer": "AI News"},
     "ai_tips": {"name": "AI Tips", "color": 0x9B59B6, "footer": "X Tips"},
+    "weekly_digest": {"name": "Weekly Digest", "color": 0x2ECC71, "footer": "週次まとめ"},
 }
 
 CATEGORY_NAME = "AI Updates"
@@ -168,10 +170,11 @@ class DiscordBot:
         # Build embed
         embed = {
             "title": title[:256],  # Discord title limit
-            "url": url,
             "color": config["color"],
             "footer": {"text": f"{config['name']} | {config.get('footer', config['name'])}"},
         }
+        if url:
+            embed["url"] = url
 
         # Add description only if summary has content
         if summary:

@@ -357,6 +357,47 @@ def get_article_by_title_date(
         return dict(row)
 
 
+def get_recent_articles(
+    db_path: str,
+    days: int = 7,
+    sources: list[str] | None = None,
+) -> list[dict]:
+    """Get articles from the past N days, optionally filtered by source.
+
+    Args:
+        db_path: Path to the SQLite database file.
+        days: Number of days to look back.
+        sources: Optional list of source names to filter by.
+
+    Returns:
+        List of article dicts ordered by source then published_at.
+    """
+    from datetime import timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+    with get_connection(db_path) as conn:
+        if sources:
+            placeholders = ",".join("?" * len(sources))
+            cursor = conn.execute(
+                f"SELECT url, source, title, published_at, notified_at "
+                f"FROM articles "
+                f"WHERE notified_at IS NOT NULL AND created_at >= ? "
+                f"AND source IN ({placeholders}) "
+                f"ORDER BY source, published_at DESC",
+                [cutoff] + sources,
+            )
+        else:
+            cursor = conn.execute(
+                "SELECT url, source, title, published_at, notified_at "
+                "FROM articles "
+                "WHERE notified_at IS NOT NULL AND created_at >= ? "
+                "ORDER BY source, published_at DESC",
+                (cutoff,),
+            )
+        return [dict(row) for row in cursor.fetchall()]
+
+
 def reset_db(db_path: str) -> None:
     """Drop and recreate the articles table. USE WITH CAUTION.
 
