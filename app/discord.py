@@ -27,11 +27,11 @@ SOURCE_CHANNELS: dict[str, str] = {
 
 # Source display config for embeds
 SOURCE_CONFIG: dict[str, dict] = {
-    "openai": {"name": "OpenAI", "color": 0x10A37F},       # green
-    "anthropic": {"name": "Anthropic", "color": 0xD4A574},  # tan/brown
-    "gemini": {"name": "Gemini", "color": 0x4285F4},        # blue
-    "ai_news": {"name": "AI News", "color": 0xFF6B35},      # orange
-    "ai_tips": {"name": "AI Tips", "color": 0x9B59B6},      # purple
+    "openai": {"name": "OpenAI", "color": 0x10A37F, "footer": "公式発表"},
+    "anthropic": {"name": "Anthropic", "color": 0xD4A574, "footer": "公式発表"},
+    "gemini": {"name": "Gemini", "color": 0x4285F4, "footer": "公式発表"},
+    "ai_news": {"name": "AI News", "color": 0xFF6B35, "footer": "AI News"},
+    "ai_tips": {"name": "AI Tips", "color": 0x9B59B6, "footer": "X Tips"},
 }
 
 CATEGORY_NAME = "AI Updates"
@@ -176,7 +176,7 @@ class DiscordBot:
             "description": description,
             "url": url,
             "color": config["color"],
-            "footer": {"text": f"{config['name']} | 公式発表"},
+            "footer": {"text": f"{config['name']} | {config.get('footer', config['name'])}"},
         }
 
         if dry_run:
