@@ -257,22 +257,31 @@ def process_articles(
             logger.warning(f"Skipping article without summary (use --fallback to send anyway): {article.title}")
             continue
 
-        # Send via Discord Bot embed
+        # Send to Discord
         try:
-            success = bot.send_embed(
-                source=article.source,
-                title=article.title,
-                summary=summary,
-                url=article.url,
-                dry_run=dry_run,
-            )
-            if success:
-                logger.info(f"Sent embed for: {article.title} -> #{article.source}")
+            if article.source == "ai_tips":
+                # Tips: plain URL only (Discord auto-generates preview card)
+                success = bot.send_url(
+                    source=article.source,
+                    url=article.url,
+                    dry_run=dry_run,
+                )
             else:
-                logger.error(f"Failed to send embed for: {article.title}")
+                # Other sources: rich embed with summary
+                success = bot.send_embed(
+                    source=article.source,
+                    title=article.title,
+                    summary=summary,
+                    url=article.url,
+                    dry_run=dry_run,
+                )
+            if success:
+                logger.info(f"Sent to #{article.source}: {article.title}")
+            else:
+                logger.error(f"Failed to send for: {article.title}")
                 continue
         except Exception as e:
-            logger.error(f"Failed to send Discord embed: {e}")
+            logger.error(f"Failed to send to Discord: {e}")
             continue
 
         # Save to database (skip in dry-run mode)

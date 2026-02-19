@@ -195,3 +195,44 @@ class DiscordBot:
         except Exception as e:
             logger.error(f"Failed to send to #{channel_name}: {e}")
             return False
+
+    def send_url(
+        self,
+        source: str,
+        url: str,
+        dry_run: bool = False,
+    ) -> bool:
+        """Send a plain URL message to the source-specific channel.
+
+        Discord auto-generates a preview card from the URL.
+
+        Args:
+            source: Article source name.
+            url: URL to send.
+            dry_run: If True, log instead of sending.
+
+        Returns:
+            True if successful, False otherwise.
+        """
+        channel_name = SOURCE_CHANNELS.get(source, source)
+        channel_id = self.get_channel_id(source)
+
+        if not channel_id:
+            logger.error(f"No channel for source: {source}")
+            return False
+
+        if dry_run:
+            logger.info(f"[DRY-RUN] #{channel_name}: {url}")
+            return True
+
+        try:
+            self._request(
+                "POST",
+                f"/channels/{channel_id}/messages",
+                json={"content": url},
+            )
+            logger.info(f"Sent to #{channel_name}: {url}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send to #{channel_name}: {e}")
+            return False
