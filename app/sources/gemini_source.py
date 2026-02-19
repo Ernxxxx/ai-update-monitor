@@ -287,31 +287,18 @@ class GeminiSource(BaseSource):
 
     @staticmethod
     def _build_changelog_title(date_title: str, content: str) -> str:
-        """Build a descriptive title for changelog entries.
+        """Build a stable title for changelog entries.
 
-        Changelog entries often have just a date as the heading.
-        This prepends 'Gemini API Changelog:' and appends a short
-        content hint to make the title more informative.
+        Uses only the date to ensure title stability across runs.
+        Content changes on the changelog page won't cause re-posting.
 
         Args:
             date_title: The raw date heading text.
-            content: The changelog entry content.
+            content: The changelog entry content (unused, kept for API compat).
 
         Returns:
-            A descriptive title string.
+            A stable title string.
         """
-        # Extract first meaningful line as a hint (up to 60 chars)
-        hint = ""
-        for line in content.split("\n"):
-            line = line.strip()
-            if line and len(line) > 10:
-                hint = line[:60].rstrip()
-                if len(line) > 60:
-                    hint += "..."
-                break
-
-        if hint:
-            return f"Gemini API Changelog: {date_title} - {hint}"
         return f"Gemini API Changelog: {date_title}"
 
     def _parse_changelog_date(self, text: str) -> datetime | None:
