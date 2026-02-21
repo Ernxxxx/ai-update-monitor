@@ -15,10 +15,10 @@ from typing import List, Optional
 from app.config import get_config, Config
 from app.db import init_db, is_notified, save_article, batch_check_articles, purge_old_articles, get_notified_titles
 from app.sources import get_all_sources, Article
-from app.llm import summarize_article, generate_weekly_digest
+from app.llm import summarize_article, generate_weekly_digest, generate_daily_digest
 from app.db import get_recent_articles
 from app.discord import DiscordBot
-from app.utils import compute_hash, format_datetime
+from app.utils import compute_hash, format_datetime, normalize_url
 
 
 # Windows環境でのUTF-8対応 (pytest実行時はキャプチャ機構と競合するためスキップ)
@@ -94,6 +94,12 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--daily-digest",
+        action="store_true",
+        help="Generate and send a daily digest summary to #daily-digest",
+    )
+
+    parser.add_argument(
         "--weekly-digest",
         action="store_true",
         help="Generate and send a weekly digest summary to #weekly-digest",
@@ -136,7 +142,7 @@ def fetch_all_articles() -> List[Article]:
     with ThreadPoolExecutor(max_workers=len(sources), thread_name_prefix="fetch") as executor:
         futures = {executor.submit(_fetch_from_source, s): s for s in sources}
 
-        for future in as_completed(futures, timeout=120):
+        for future in as_completed(futures, timeout=300):
             source = futures[future]
             try:
                 result = future.result()
@@ -166,6 +172,10 @@ def process_articles(
     articles = fetch_all_articles()
     logger.info(f"Found {len(articles)} total articles")
 
+    # Normalize all URLs for consistent dedup
+    for article in articles:
+        article.url = normalize_url(article.url)
+
     # Filter out articles older than MAX_AGE_DAYS
     MAX_AGE_DAYS = 7
     cutoff = datetime.now(timezone.utc) - timedelta(days=MAX_AGE_DAYS)
@@ -190,17 +200,17 @@ def process_articles(
     ]
     existing = batch_check_articles(config.db_path, urls, titles_dates)
 
-    # For X sources: also check title-only matches to catch repeated promo tweets
-    # (same text content posted as different tweet IDs)
+    # Title-only dedup for X sources (repeated promo tweets with different IDs)
+    # AND for all sources to catch cross-source duplicates
     x_sources = {"ai_news", "ai_tips"}
-    x_titles = [a.title for a in articles if a.source in x_sources and a.title]
-    notified_titles = get_notified_titles(config.db_path, x_titles) if x_titles else set()
+    all_titles = [a.title for a in articles if a.title]
+    notified_titles = get_notified_titles(config.db_path, all_titles) if all_titles else set()
 
     new_articles: List[Article] = []
     skipped_url = 0
     skipped_title_date = 0
     skipped_title = 0
-    seen_titles: set[str] = set()  # In-batch dedup for same-text tweets
+    seen_titles: set[str] = set()  # In-batch dedup for same-text items
 
     for article in articles:
         pub_str = format_datetime(article.published_at) if article.published_at else None
@@ -212,8 +222,6 @@ def process_articles(
 
         if row and row.get("notified_at"):
             # Already notified by URL -- skip entirely.
-            # Content hash changes are cosmetic (dynamic web content) and
-            # should NOT trigger re-posting.
             skipped_url += 1
         elif title_date_row and title_date_row.get("notified_at"):
             # Already notified by title+date (different URL, same article)
@@ -250,9 +258,27 @@ def process_articles(
     for article in new_articles:
         logger.info(f"Processing: {article.title}")
 
+        # Pre-save to DB with notified_at=None BEFORE Discord send.
+        # This prevents the "crash window" where Discord succeeds but
+        # DB save doesn't happen, causing re-sends on next run.
+        content_hash = compute_hash(article.content)
+        if not dry_run:
+            save_article(
+                db_path=config.db_path,
+                article={
+                    "url": article.url,
+                    "source": article.source,
+                    "title": article.title,
+                    "published_at": format_datetime(article.published_at) if article.published_at else None,
+                    "content_hash": content_hash,
+                    "notified_at": None,  # Mark as seen but not yet notified
+                }
+            )
+
         summary: Optional[str] = None
 
-        # X sources: skip LLM. Tips = URL only, News = tweet text.
+        # X sources: Tips = URL only, ai_news = tweet text directly.
+        # Product account tweets (source=openai/anthropic/gemini) go through LLM.
         if article.source == "ai_tips":
             summary = ""
         elif article.source == "ai_news":
@@ -309,11 +335,9 @@ def process_articles(
             logger.error(f"Failed to send to Discord: {e}")
             continue
 
-        # Save to database (skip in dry-run mode)
+        # Update notified_at after successful Discord send
         if not dry_run:
-            content_hash = compute_hash(article.content)
             now = format_datetime(datetime.now(timezone.utc))
-
             save_article(
                 db_path=config.db_path,
                 article={
@@ -397,6 +421,67 @@ def send_weekly_digest(
     return success
 
 
+def send_daily_digest(
+    config: Config,
+    dry_run: bool = False,
+) -> bool:
+    """Generate and send a daily digest to #daily-digest.
+
+    Args:
+        config: Application configuration.
+        dry_run: If True, log instead of sending to Discord.
+
+    Returns:
+        True if digest was sent successfully.
+    """
+    logger.info("Generating daily digest...")
+
+    # Get articles from the past 1 day (official 3 + ai_news)
+    digest_sources = ["openai", "anthropic", "gemini", "ai_news"]
+    articles = get_recent_articles(config.db_path, days=1, sources=digest_sources)
+
+    if not articles:
+        logger.info("No articles found for daily digest")
+        return False
+
+    logger.info(f"Found {len(articles)} articles for daily digest")
+
+    if not config.llm_api_key:
+        logger.error("LLM API key required for daily digest")
+        return False
+
+    digest = generate_daily_digest(
+        base_url=config.llm_base_url,
+        api_key=config.llm_api_key,
+        model=config.llm_model,
+        articles=articles,
+    )
+
+    if not digest:
+        logger.error("Failed to generate daily digest")
+        return False
+
+    bot = DiscordBot(token=config.discord_bot_token, guild_id=config.discord_guild_id)
+    if not dry_run:
+        bot.ensure_channels()
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    success = bot.send_embed(
+        source="daily_digest",
+        title=f"Daily AI Digest ({today})",
+        summary=digest,
+        url="",
+        dry_run=dry_run,
+    )
+
+    if success:
+        logger.info("Daily digest sent successfully")
+    else:
+        logger.error("Failed to send daily digest")
+
+    return success
+
+
 def main(args: Optional[List[str]] = None) -> int:
     """Main entry point for the CLI.
 
@@ -421,6 +506,16 @@ def main(args: Optional[List[str]] = None) -> int:
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         return 1
+
+    # Daily digest mode
+    if parsed_args.daily_digest:
+        logger.info("Running daily digest...")
+        try:
+            success = send_daily_digest(config=config, dry_run=parsed_args.dry_run)
+            return 0 if success else 1
+        except Exception as e:
+            logger.error(f"Error during daily digest: {e}")
+            return 1
 
     # Weekly digest mode
     if parsed_args.weekly_digest:

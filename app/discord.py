@@ -23,7 +23,9 @@ SOURCE_CHANNELS: dict[str, str] = {
     "gemini": "gemini-updates",
     "ai_news": "ai-news",
     "ai_tips": "ai-tips",
+    "daily_digest": "daily-digest",
     "weekly_digest": "weekly-digest",
+    "status": "status-alerts",
 }
 
 # Source display config for embeds
@@ -33,7 +35,9 @@ SOURCE_CONFIG: dict[str, dict] = {
     "gemini": {"name": "Gemini", "color": 0x4285F4, "footer": "公式発表"},
     "ai_news": {"name": "AI News", "color": 0xFF6B35, "footer": "AI News"},
     "ai_tips": {"name": "AI Tips", "color": 0x9B59B6, "footer": "X Tips"},
+    "daily_digest": {"name": "Daily Digest", "color": 0x3498DB, "footer": "日次まとめ"},
     "weekly_digest": {"name": "Weekly Digest", "color": 0x2ECC71, "footer": "週次まとめ"},
+    "status": {"name": "Status", "color": 0xE74C3C, "footer": "障害情報"},
 }
 
 CATEGORY_NAME = "AI Updates"

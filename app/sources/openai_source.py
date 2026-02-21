@@ -15,7 +15,7 @@ from .playwright_base import PlaywrightMixin, fetch_with_playwright
 logger = logging.getLogger(__name__)
 
 TIMEOUT = DEFAULT_TIMEOUT
-REQUEST_DELAY = 2  # seconds between requests
+REQUEST_DELAY = 0.5  # seconds between requests
 CONTENT_MAX_LENGTH = 3000  # Maximum characters for article content
 
 
@@ -30,6 +30,9 @@ class OpenAISource(BaseSource, PlaywrightMixin):
         "https://openai.com/news/rss.xml",
         "https://openai.com/blog/rss.xml",
     ]
+
+    # Developer changelog RSS (separate content from news blog)
+    CHANGELOG_RSS = "https://developers.openai.com/changelog/rss.xml"
 
     # Web pages to scrape (fallback)
     NEWS_URLS = [
@@ -80,6 +83,25 @@ class OpenAISource(BaseSource, PlaywrightMixin):
             except Exception as e:
                 logger.debug(f"RSS feed {rss_url} failed: {e}")
             time.sleep(REQUEST_DELAY)
+
+        # Strategy 1.5: Fetch developer changelog RSS (separate content)
+        if len(articles) < limit:
+            try:
+                logger.info(f"Trying changelog RSS: {self.CHANGELOG_RSS}")
+                changelog_articles = self._fetch_from_rss(
+                    self.CHANGELOG_RSS, limit - len(articles)
+                )
+                if changelog_articles:
+                    existing_urls = {a.url for a in articles}
+                    for article in changelog_articles:
+                        if article.url not in existing_urls and len(articles) < limit:
+                            articles.append(article)
+                            existing_urls.add(article.url)
+                    logger.info(
+                        f"Found {len(changelog_articles)} articles from changelog RSS"
+                    )
+            except Exception as e:
+                logger.debug(f"Changelog RSS failed: {e}")
 
         # Strategy 2: Try web scraping if RSS didn't work
         if len(articles) < limit:
@@ -266,9 +288,9 @@ class OpenAISource(BaseSource, PlaywrightMixin):
             # Extract published date if available
             published_at = self._extract_date(link)
 
-            # Fetch article content from individual page
-            content = self._fetch_article_content(url)
-            time.sleep(REQUEST_DELAY)  # Be polite between requests
+            # Extract summary from nearby text (avoid per-article Playwright fetch)
+            content = self._extract_nearby_text(link)
+            time.sleep(REQUEST_DELAY)
 
             articles.append(
                 Article(
@@ -284,6 +306,9 @@ class OpenAISource(BaseSource, PlaywrightMixin):
 
     def _fetch_with_playwright(self, url: str, limit: int) -> list[Article]:
         """Fetch articles using Playwright for bot-protected pages.
+
+        Uses listing page only - does NOT fetch individual article content
+        to avoid multi-minute delays from per-article Playwright loads.
 
         Args:
             url: URL of the page to scrape.
@@ -337,9 +362,8 @@ class OpenAISource(BaseSource, PlaywrightMixin):
             # Extract published date if available
             published_at = self._extract_date(link)
 
-            # Fetch article content from individual page
-            content = self._fetch_article_content(full_url)
-            time.sleep(REQUEST_DELAY)  # Be polite between requests
+            # Extract summary from nearby text (avoid per-article Playwright fetch)
+            content = self._extract_nearby_text(link)
 
             articles.append(
                 Article(
@@ -653,3 +677,41 @@ class OpenAISource(BaseSource, PlaywrightMixin):
         except Exception as e:
             logger.warning(f"Failed to fetch article content from {url}: {e}")
             return ""
+
+    @staticmethod
+    def _extract_nearby_text(element) -> str:
+        """Extract summary text from the listing page around a link element.
+
+        Avoids the need for a per-article Playwright fetch by looking at
+        sibling/parent elements on the listing page for description text.
+
+        Args:
+            element: BeautifulSoup link element.
+
+        Returns:
+            Extracted text content, or empty string.
+        """
+        # Search in element itself and up to 3 parent levels
+        containers = [element]
+        parent = element.parent
+        for _ in range(3):
+            if parent and parent.name not in ("body", "html", "[document]"):
+                containers.append(parent)
+                parent = parent.parent
+            else:
+                break
+
+        for container in containers:
+            # Look for summary/description elements
+            for selector in ("p", "[class*='summary']", "[class*='excerpt']",
+                             "[class*='description']", "[class*='snippet']"):
+                try:
+                    elem = container.select_one(selector)
+                    if elem:
+                        text = elem.get_text(strip=True)
+                        if text and len(text) > 30:
+                            return text[:CONTENT_MAX_LENGTH]
+                except Exception:
+                    continue
+
+        return ""

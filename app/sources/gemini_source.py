@@ -5,15 +5,20 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 
+import feedparser
 import requests
 from bs4 import BeautifulSoup
 
 from .base import Article, BaseSource
-from .http_client import fetch_with_retry, DEFAULT_TIMEOUT
+from .http_client import fetch_with_retry, RSS_HEADERS, DEFAULT_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT = DEFAULT_TIMEOUT
+
+# RSS feeds for sources that support them
+AI_BLOG_RSS = "https://blog.google/technology/ai/rss/"
+DEEPMIND_RSS = "https://deepmind.google/blog/rss.xml"
 
 
 class GeminiSource(BaseSource):
@@ -63,6 +68,19 @@ class GeminiSource(BaseSource):
                         articles.append(article)
             except Exception as e:
                 logger.error(f"Failed to fetch from Google AI blog: {e}")
+
+        # Also fetch from DeepMind blog RSS
+        if len(articles) < limit:
+            try:
+                remaining = limit - len(articles)
+                deepmind_articles = self._fetch_from_deepmind(remaining)
+                for article in deepmind_articles:
+                    unique_key = self._generate_unique_key(article.url, article.title)
+                    if unique_key not in seen_keys:
+                        seen_keys.add(unique_key)
+                        articles.append(article)
+            except Exception as e:
+                logger.error(f"Failed to fetch from DeepMind blog: {e}")
 
         return articles[:limit]
 
@@ -202,7 +220,9 @@ class GeminiSource(BaseSource):
         return articles
 
     def _fetch_from_ai_blog(self, limit: int) -> list[Article]:
-        """Fetch Gemini-related articles from Google AI Blog.
+        """Fetch articles from Google AI Blog.
+
+        Tries RSS feed first for stability, falls back to HTML scraping.
 
         Args:
             limit: Maximum number of articles to fetch.
@@ -210,6 +230,15 @@ class GeminiSource(BaseSource):
         Returns:
             List of Article objects.
         """
+        # Try RSS first (more stable than scraping)
+        try:
+            articles = self._fetch_from_rss(AI_BLOG_RSS, limit, "Google AI Blog")
+            if articles:
+                return articles
+        except Exception as e:
+            logger.debug(f"Google AI Blog RSS failed, falling back to scraping: {e}")
+
+        # Fall back to HTML scraping
         response = fetch_with_retry(self.AI_BLOG_URL, timeout=TIMEOUT)
 
         soup = BeautifulSoup(response.text, "html.parser")
@@ -284,6 +313,93 @@ class GeminiSource(BaseSource):
             )
 
         return articles
+
+    def _fetch_from_rss(self, feed_url: str, limit: int, label: str = "") -> list[Article]:
+        """Fetch articles from an RSS feed using feedparser.
+
+        Args:
+            feed_url: URL of the RSS feed.
+            limit: Maximum number of articles to fetch.
+            label: Label for logging.
+
+        Returns:
+            List of Article objects.
+        """
+        logger.info(f"Trying RSS feed: {feed_url}")
+        resp = fetch_with_retry(feed_url, headers=RSS_HEADERS, timeout=TIMEOUT)
+        feed = feedparser.parse(resp.text)
+
+        if feed.bozo and not feed.entries:
+            raise ValueError(f"Failed to parse RSS feed: {feed.bozo_exception}")
+
+        articles: list[Article] = []
+        cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+
+        for entry in feed.entries[:limit]:
+            try:
+                url = entry.get("link", "")
+                if not url:
+                    continue
+
+                title = entry.get("title", "").strip()
+                if not title:
+                    continue
+
+                # Extract content
+                content = ""
+                if "content" in entry and entry.content:
+                    content = entry.content[0].get("value", "")
+                elif "summary" in entry:
+                    content = entry.get("summary", "")
+
+                # Strip HTML tags from content
+                if content:
+                    content = BeautifulSoup(content, "html.parser").get_text(
+                        separator="\n", strip=True
+                    )
+
+                # Extract date
+                published_at = None
+                for field in ("published_parsed", "updated_parsed"):
+                    parsed = entry.get(field)
+                    if parsed:
+                        try:
+                            published_at = datetime(*parsed[:6], tzinfo=timezone.utc)
+                            break
+                        except (TypeError, ValueError):
+                            continue
+
+                # Skip old articles
+                if published_at and published_at < cutoff:
+                    continue
+
+                articles.append(
+                    Article(
+                        url=url,
+                        title=title,
+                        content=content,
+                        source=self.name,
+                        published_at=published_at,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"Failed to parse RSS entry: {e}")
+                continue
+
+        if label:
+            logger.info(f"Found {len(articles)} articles from {label} RSS")
+        return articles
+
+    def _fetch_from_deepmind(self, limit: int) -> list[Article]:
+        """Fetch articles from Google DeepMind blog via RSS.
+
+        Args:
+            limit: Maximum number of articles to fetch.
+
+        Returns:
+            List of Article objects.
+        """
+        return self._fetch_from_rss(DEEPMIND_RSS, limit, "DeepMind")
 
     @staticmethod
     def _build_changelog_title(date_title: str, content: str) -> str:

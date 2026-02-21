@@ -53,14 +53,14 @@ python -m app --loop --interval 60 --fallback  # 1分間隔、要約失敗時も
 
 ## 環境変数
 
-| 変数名 | 説明 | 必須 |
-|--------|------|------|
-| DISCORD_WEBHOOK_URL | Discord Webhook URL | 必須 |
-| LLM_BASE_URL | OpenAI互換APIベースURL | 要約使用時 |
-| LLM_API_KEY | LLM APIキー | 要約使用時 |
-| LLM_MODEL | 使用モデル名 | 要約使用時 |
-| CHECK_INTERVAL | チェック間隔（秒） | オプション |
-| DB_PATH | SQLiteパス | オプション |
+| 変数名              | 説明                   | 必須       |
+| ------------------- | ---------------------- | ---------- |
+| DISCORD_WEBHOOK_URL | Discord Webhook URL    | 必須       |
+| LLM_BASE_URL        | OpenAI互換APIベースURL | 要約使用時 |
+| LLM_API_KEY         | LLM APIキー            | 要約使用時 |
+| LLM_MODEL           | 使用モデル名           | 要約使用時 |
+| CHECK_INTERVAL      | チェック間隔（秒）     | オプション |
+| DB_PATH             | SQLiteパス             | オプション |
 
 ## ディレクトリ構成
 

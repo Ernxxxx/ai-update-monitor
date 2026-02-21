@@ -8,7 +8,8 @@ from .base import Article, BaseSource
 from .gemini_source import GeminiSource
 from .openai_source import OpenAISource
 from .playwright_base import PlaywrightMixin, fetch_with_playwright
-from .x_source import XNewsSource, XTipsSource
+from .status_source import StatusSource
+from .x_source import XNewsSource, XTipsSource, XProductSource
 
 __all__ = [
     "Article",
@@ -18,6 +19,8 @@ __all__ = [
     "GeminiSource",
     "XNewsSource",
     "XTipsSource",
+    "XProductSource",
+    "StatusSource",
     "PlaywrightMixin",
     "fetch_with_playwright",
     "get_all_sources",
@@ -35,11 +38,13 @@ def get_all_sources() -> list[BaseSource]:
         OpenAISource(),
         AnthropicSource(),
         GeminiSource(),
+        StatusSource(),
     ]
 
     x_news = XNewsSource()
     if x_news.bearer_token:
         sources.append(x_news)
         sources.append(XTipsSource())
+        sources.append(XProductSource())
 
     return sources

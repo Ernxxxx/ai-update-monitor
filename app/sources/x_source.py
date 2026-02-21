@@ -1,8 +1,9 @@
 """X (Twitter) sources using X API v2 Recent Search.
 
-Provides two sources:
+Provides three source types:
 - XNewsSource: Official AI company announcements -> #ai-news
 - XTipsSource: AI tips, tutorials, prompt engineering -> #ai-tips
+- XProductSource: Product account updates -> their dedicated channels
 """
 
 import logging
@@ -20,8 +21,6 @@ TIMEOUT = 30
 # --- Account lists ---
 
 # Official AI company accounts (news/announcements)
-# NOTE: OpenAI, AnthropicAI, GoogleDeepMind, GoogleAI are excluded here
-# because they already have dedicated channels (#openai-updates, etc.).
 AI_NEWS_ACCOUNTS = [
     "xai",
     "MistralAI",
@@ -33,6 +32,14 @@ AI_NEWS_ACCOUNTS = [
     "StabilityAI",
     "CohereAI",
 ]
+
+# Product accounts whose tweets route to their dedicated channels.
+# username (case-insensitive) -> source name for channel routing.
+PRODUCT_ACCOUNT_MAP: dict[str, str] = {
+    "openai": "openai",
+    "claudeai": "anthropic",
+    "geminiapp": "gemini",
+}
 
 # Accounts that share AI tips, tutorials, developer content
 # NOTE: OpenAIDevs, GoogleColab removed -- their content overlaps with
@@ -49,6 +56,8 @@ AI_TIPS_ACCOUNTS = [
     "kaboratory",
     "oikon48",
     "nukonuko",
+    "masahirochaen",
+    "ctgptlb",
 ]
 
 
@@ -193,3 +202,81 @@ class XTipsSource(_XBaseSource):
     def _build_query(self) -> str:
         from_clauses = " OR ".join(f"from:{a}" for a in AI_TIPS_ACCOUNTS)
         return f"({from_clauses}) {self._KEYWORD_FILTER} -is:retweet -is:reply"
+
+
+class XProductSource(_XBaseSource):
+    """Product account updates routed to their dedicated channels.
+
+    @OpenAI -> #openai-updates, @claudeai -> #anthropic-updates,
+    @GeminiApp -> #gemini-updates.
+    """
+
+    name = "x_product"
+
+    def _build_query(self) -> str:
+        accounts = list(PRODUCT_ACCOUNT_MAP.keys())
+        from_clauses = " OR ".join(f"from:{a}" for a in accounts)
+        return f"({from_clauses}) -is:retweet -is:reply"
+
+    def _parse_response(self, data: dict, limit: int) -> list[Article]:
+        tweets = data.get("data", [])
+        if not tweets:
+            logger.info(f"No tweets found for {self.name}")
+            return []
+
+        # Build user lookup
+        users: dict[str, dict] = {}
+        for user in data.get("includes", {}).get("users", []):
+            users[user["id"]] = {
+                "username": user.get("username", ""),
+                "name": user.get("name", ""),
+            }
+
+        articles: list[Article] = []
+        seen_urls: set[str] = set()
+
+        for tweet in tweets[:limit]:
+            tweet_id = tweet.get("id", "")
+            text = tweet.get("text", "")
+            author_id = tweet.get("author_id", "")
+            created_at_str = tweet.get("created_at", "")
+
+            if not tweet_id or not text:
+                continue
+
+            user_info = users.get(author_id, {})
+            username = user_info.get("username", "unknown")
+            display_name = user_info.get("name", username)
+
+            url = f"https://x.com/{username}/status/{tweet_id}"
+            if url in seen_urls:
+                continue
+            seen_urls.add(url)
+
+            # Route to the correct source based on username
+            source = PRODUCT_ACCOUNT_MAP.get(username.lower(), "ai_news")
+
+            published_at = None
+            if created_at_str:
+                try:
+                    published_at = datetime.fromisoformat(
+                        created_at_str.replace("Z", "+00:00")
+                    )
+                except ValueError:
+                    pass
+
+            title = self._build_title(display_name, text)
+            content = f"@{username}: {text}"
+
+            articles.append(
+                Article(
+                    url=url,
+                    title=title,
+                    content=content,
+                    source=source,
+                    published_at=published_at,
+                )
+            )
+
+        logger.info(f"Found {len(articles)} tweets for {self.name}")
+        return articles

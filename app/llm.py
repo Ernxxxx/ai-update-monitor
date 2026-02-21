@@ -45,6 +45,24 @@ DIGEST_USER_TEMPLATE = """以下は今週（過去7日間）のAI関連ニュー
 
 {articles_text}"""
 
+DAILY_DIGEST_SYSTEM_PROMPT = """あなたはAI業界の日次レポートを作成する専門アナリストです。
+以下のルールに従って日次ダイジェストを作成してください：
+- 事実と推測を明確に分ける
+- 誇張しない
+- 日本語で回答
+- 各社ごとにセクション分けして要約
+- 出力フォーマット:
+  冒頭: 本日のハイライトを1文で
+  各社セクション: **[会社名]** の見出しで区切る
+  各ニュース: 1文で簡潔に要約（URLは含めない）
+  末尾: 本日の注目ポイントを1文で
+- ニュースが少ない場合は無理に水増しせず、簡潔にまとめる"""
+
+DAILY_DIGEST_USER_TEMPLATE = """以下は本日（過去24時間）のAI関連ニュース一覧です。
+日次ダイジェストを作成してください。
+
+{articles_text}"""
+
 REQUEST_TIMEOUT = 30
 
 
@@ -228,4 +246,95 @@ def generate_weekly_digest(
         return None
     except Exception as e:
         logger.error(f"Unexpected error while generating weekly digest: {e}")
+        return None
+
+
+def generate_daily_digest(
+    base_url: str,
+    api_key: str,
+    model: str,
+    articles: list[dict],
+) -> str | None:
+    """Generate a daily digest summary from a list of articles.
+
+    Args:
+        base_url: OpenAI-compatible API base URL.
+        api_key: API key for authentication.
+        model: Model name to use.
+        articles: List of article dicts with url, source, title, published_at.
+
+    Returns:
+        Digest text if successful, None otherwise.
+    """
+    if not articles:
+        logger.info("No articles for daily digest")
+        return None
+
+    # Group articles by source
+    by_source: dict[str, list[dict]] = {}
+    for a in articles:
+        by_source.setdefault(a["source"], []).append(a)
+
+    # Build text block
+    parts = []
+    for source in ["openai", "anthropic", "gemini", "ai_news"]:
+        items = by_source.get(source, [])
+        if not items:
+            continue
+        name = _SOURCE_NAMES.get(source, source)
+        parts.append(f"## {name} ({len(items)}件)")
+        for item in items:
+            date = (item.get("published_at") or "")[:10]
+            parts.append(f"- [{date}] {item['title']}  {item['url']}")
+        parts.append("")
+
+    articles_text = "\n".join(parts)
+
+    # Truncate if too long for LLM context
+    if len(articles_text) > 8000:
+        articles_text = articles_text[:8000] + "\n...(truncated)"
+
+    user_prompt = DAILY_DIGEST_USER_TEMPLATE.format(articles_text=articles_text)
+
+    base_url = base_url.rstrip("/")
+    endpoint = f"{base_url}/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": DAILY_DIGEST_SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+
+    try:
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            json=payload,
+            timeout=45,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        digest = data["choices"][0]["message"]["content"]
+        logger.info(f"Generated daily digest ({len(digest)} chars)")
+        return digest
+
+    except requests.Timeout:
+        logger.error("Timeout while generating daily digest")
+        return None
+    except requests.RequestException as e:
+        logger.error(f"Request error while generating daily digest: {e}")
+        return None
+    except (KeyError, IndexError) as e:
+        logger.error(f"Failed to parse LLM response for daily digest: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error while generating daily digest: {e}")
         return None
