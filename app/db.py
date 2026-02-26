@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator
 
+from app.utils import normalize_url
+
 
 def init_db(db_path: str) -> None:
     """Create the articles table if it doesn't exist.
@@ -140,7 +142,7 @@ def save_article(
             - "both": Try URL first, fall back to title+date
     """
     with get_connection(db_path) as conn:
-        url = article["url"]
+        url = normalize_url(article["url"])
         source = article["source"]
         title = article.get("title")
         published_at = article.get("published_at")

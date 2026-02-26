@@ -10,6 +10,17 @@ from typing import Optional
 from dotenv import load_dotenv
 
 
+def _default_db_path() -> str:
+    """Resolve default DB path to an absolute path relative to project root.
+
+    Ensures cron jobs always find the same database regardless of
+    the working directory they start in.
+    """
+    # project root = parent of app/ directory (where this file lives)
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(project_root, "state.db")
+
+
 @dataclass
 class Config:
     """Application configuration loaded from environment variables."""
@@ -54,7 +65,7 @@ class Config:
             llm_api_key=llm_api_key,
             llm_model=os.getenv("LLM_MODEL", "gpt-4o-mini"),
             check_interval=int(os.getenv("CHECK_INTERVAL", "600")),
-            db_path=os.getenv("DB_PATH", "state.db"),
+            db_path=os.getenv("DB_PATH", _default_db_path()),
             xai_api_key=os.getenv("XAI_API_KEY"),
             x_bearer_token=os.getenv("X_BEARER_TOKEN"),
         )

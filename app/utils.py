@@ -4,6 +4,54 @@ import hashlib
 import re
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+
+
+def normalize_url(url: str) -> str:
+    """Normalize a URL for deduplication.
+
+    Strips trailing slashes, removes tracking parameters (utm_*),
+    lowercases the hostname, and forces HTTPS scheme.
+
+    Args:
+        url: Raw URL string.
+
+    Returns:
+        Normalized URL suitable for dedup comparison.
+        Returns original string if parsing fails.
+    """
+    if not url:
+        return url
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+
+    # Force HTTPS
+    scheme = "https"
+
+    # Lowercase hostname, strip www.
+    netloc = parsed.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+
+    # Remove trailing slash (but keep root "/")
+    path = parsed.path.rstrip("/") or ""
+
+    # Strip tracking query params
+    _TRACKING_PARAMS = {
+        "utm_source", "utm_medium", "utm_campaign",
+        "utm_term", "utm_content", "ref", "source",
+    }
+    if parsed.query:
+        qs = parse_qs(parsed.query, keep_blank_values=True)
+        filtered = {k: v for k, v in qs.items() if k.lower() not in _TRACKING_PARAMS}
+        query = urlencode(filtered, doseq=True) if filtered else ""
+    else:
+        query = ""
+
+    return urlunparse((scheme, netloc, path, parsed.params, query, parsed.fragment))
 
 
 def compute_hash(text: str) -> str:

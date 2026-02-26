@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from app.utils import compute_hash, format_datetime, parse_datetime, sanitize_for_log, truncate_text
+from app.utils import compute_hash, format_datetime, normalize_url, parse_datetime, sanitize_for_log, truncate_text
 
 
 class TestComputeHash:
@@ -55,6 +55,42 @@ class TestParseDatetime:
 
     def test_invalid_returns_none(self):
         assert parse_datetime("not-a-date") is None
+
+
+class TestNormalizeUrl:
+    def test_strips_trailing_slash(self):
+        assert normalize_url("https://openai.com/blog/") == "https://openai.com/blog"
+
+    def test_strips_www(self):
+        assert normalize_url("https://www.anthropic.com/news") == "https://anthropic.com/news"
+
+    def test_forces_https(self):
+        assert normalize_url("http://openai.com/blog") == "https://openai.com/blog"
+
+    def test_removes_utm_params(self):
+        url = "https://openai.com/blog/post?utm_source=twitter&utm_medium=social"
+        assert normalize_url(url) == "https://openai.com/blog/post"
+
+    def test_preserves_meaningful_params(self):
+        url = "https://example.com/search?q=test&page=2&utm_source=x"
+        result = normalize_url(url)
+        assert "q=test" in result
+        assert "page=2" in result
+        assert "utm_source" not in result
+
+    def test_preserves_fragment(self):
+        url = "https://ai.google.dev/changelog#jan-2026"
+        assert normalize_url(url) == "https://ai.google.dev/changelog#jan-2026"
+
+    def test_empty_returns_empty(self):
+        assert normalize_url("") == ""
+
+    def test_lowercases_hostname(self):
+        assert normalize_url("https://OpenAI.COM/Blog") == "https://openai.com/Blog"
+
+    def test_x_tweet_url_unchanged(self):
+        url = "https://x.com/OpenAI/status/123456"
+        assert normalize_url(url) == "https://x.com/OpenAI/status/123456"
 
 
 class TestSanitizeForLog:
