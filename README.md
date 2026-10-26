@@ -17,7 +17,7 @@ OpenAI / Anthropic / Google Gemini の公式情報を定期監視し、新規・
 
 ## セットアップ
 
-1. Python 3.11+ をインストール
+1. Python 3.13.18 をインストール
 2. 依存関係インストール:
    ```bash
    pip install -r requirements.txt
@@ -97,3 +97,13 @@ python -m app --dry-run
 ## ライセンス
 
 MIT
+
+
+## Security update (2026-10-26)
+
+- Runtime: Python 3.13.18, built from the verified PSF release source on Windows.
+- Each project uses its own `.venv`; do not use the legacy shared packages.
+- `requirements-lock.txt` records every installed dependency, including test/build tools.
+- Recreate with Python 3.13.18: `python -m venv .venv`, then `.\.venv\Scripts\python.exe -m pip install -r requirements-lock.txt`.
+- The scheduled task and `scripts/run-monitor.cmd` use `.venv`. Playwright uses the installed stable Google Chrome (`channel="chrome"`) with its sandbox enabled; keep Chrome updated.
+- Offline tests use temporary data and blocked networking. No Discord messages were sent during validation.

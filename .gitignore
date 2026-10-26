@@ -56,3 +56,22 @@ htmlcov/
 task_plan.md
 findings.md
 progress.md
+
+# Local operations, credentials and runtime data
+handoff.md
+findings.md
+task_plan.md
+progress.md
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+*.pfx
+.venv*/
+__pycache__/
+.pytest_cache/

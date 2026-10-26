@@ -27,10 +27,11 @@ class PlaywrightMixin:
                 cls._playwright = sync_playwright().start()
             cls._browser = cls._playwright.chromium.launch(
                 headless=True,
+                channel="chrome",
+                chromium_sandbox=True,
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--disable-dev-shm-usage',
-                    '--no-sandbox',
                     '--disable-gpu',
                     '--disable-extensions',
                 ]

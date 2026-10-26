@@ -4,8 +4,8 @@ Provides command-line interface for running the update monitor.
 """
 
 import argparse
-import io
 import logging
+import os
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,22 +22,25 @@ from app.utils import compute_hash, format_datetime, normalize_url
 
 
 # Windows環境でのUTF-8対応 (pytest実行時はキャプチャ機構と競合するためスキップ)
+# Configure console-less Windows startup without replacing owned buffers.
 _is_testing = 'pytest' in sys.modules or '_pytest' in sys.modules
 
-if sys.platform == 'win32' and not _is_testing:
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
+def _configure_standard_streams() -> None:
+    for name in ('stdout', 'stderr'):
+        stream = getattr(sys, name)
+        if stream is None:
+            setattr(sys, name, open(os.devnull, 'w', encoding='utf-8', buffering=1))
+        elif sys.platform == 'win32' and not _is_testing and hasattr(stream, 'reconfigure'):
+            stream.reconfigure(encoding='utf-8', line_buffering=True)
 
 
-# StreamHandlerにUTF-8エンコーディングを明示的に設定
+_configure_standard_streams()
+
+
 def _create_stream_handler() -> logging.StreamHandler:
-    """Create a StreamHandler with UTF-8 encoding for Windows compatibility."""
-    if sys.platform == 'win32' and not _is_testing:
-        stream = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', line_buffering=True)
-        handler = logging.StreamHandler(stream)
-    else:
-        handler = logging.StreamHandler(sys.stdout)
-    return handler
+    """Share the existing stream rather than owning a second buffer wrapper."""
+    return logging.StreamHandler(sys.stdout)
 
 
 logging.basicConfig(
